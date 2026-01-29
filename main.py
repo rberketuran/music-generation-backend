@@ -35,19 +35,33 @@ cors_origins = [
     "http://localhost:3000",  # Alternative local port
 ]
 
-# Add production frontend URL from environment if set
+# Add production frontend URL(s) from environment if set
+# Supports comma-separated multiple URLs
 frontend_url = os.getenv("FRONTEND_URL")
 if frontend_url:
-    cors_origins.append(frontend_url)
+    # Split by comma and strip whitespace to support multiple URLs
+    frontend_urls = [url.strip() for url in frontend_url.split(",") if url.strip()]
+    cors_origins.extend(frontend_urls)
+
+# Support Vercel preview URLs pattern (e.g., *.vercel.app)
+# This allows all Vercel preview deployments without listing each one
+vercel_pattern = os.getenv("ALLOW_VERCEL_PREVIEWS", "true").lower() == "true"
+cors_origin_regex = None
+if vercel_pattern:
+    # Regex pattern to match Vercel preview and production URLs
+    # Matches: *.vercel.app, *.vercel.app/*, and custom Vercel domains
+    cors_origin_regex = r"https://.*\.vercel\.app.*"
 
 # Allow all origins in development, or specific origins in production
 allow_all_origins = os.getenv("ALLOW_ALL_ORIGINS", "false").lower() == "true"
 if allow_all_origins:
     cors_origins = ["*"]
+    cors_origin_regex = None  # Disable regex when allowing all
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=cors_origins,
+    allow_origins=cors_origins if not allow_all_origins else ["*"],
+    allow_origin_regex=cors_origin_regex,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
