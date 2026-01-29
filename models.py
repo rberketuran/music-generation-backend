@@ -51,17 +51,3 @@ class CreditsResponse(BaseModel):
     remaining_credits: Optional[float] = None
     total_credits: Optional[float] = None
     subscription_tier: Optional[str] = None
-
-
-# Voice Conversion Models
-class VoiceConversionResponse(BaseModel):
-    job_id: str
-    status: str  # "pending", "processing", "completed", "failed"
-    message: str
-
-
-class VoiceConversionStatusResponse(BaseModel):
-    job_id: str
-    status: str  # "pending", "processing", "completed", "failed"
-    progress: Optional[float] = None  # 0-100 if available
-    message: Optional[str] = None

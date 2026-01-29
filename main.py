@@ -1,21 +1,16 @@
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, BackgroundTasks
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from models import (
-    MusicGenerationRequest, GenerateMusicResponse, StatusResponse, CreditsResponse,
-    VoiceConversionResponse, VoiceConversionStatusResponse
+    MusicGenerationRequest, GenerateMusicResponse, StatusResponse, CreditsResponse
 )
 from services.elevenlabs_service import format_composition_plan
 from services.elevenlabs_client import ElevenLabsClient
-from services.rvc_client import RVCClient
 from datetime import datetime
 import uuid
 import io
 import logging
-import tempfile
 import os
-import aiofiles
-from pathlib import Path
 
 # Setup logging
 logging.basicConfig(level=logging.INFO)
@@ -30,16 +25,8 @@ except Exception as e:
     print(f"Warning: Failed to initialize ElevenLabs client: {e}")
     elevenlabs_client = None
 
-# Initialize RVC client
-try:
-    rvc_client = RVCClient()
-except Exception as e:
-    logger.warning(f"Failed to initialize RVC client: {e}")
-    rvc_client = None
-
 # In-memory task storage
 tasks = {}  # {task_id: {status, created_at, composition_plan, ...}}
-voice_conversion_jobs = {}  # {job_id: {status, created_at, file_paths, ...}}
 
 # Configure CORS for frontend
 # Support both local development and production frontend URLs
@@ -375,226 +362,3 @@ async def debug_credits():
         }
     except Exception as e:
         return {"error": str(e), "type": str(type(e)), "traceback": str(e.__traceback__)}
-
-
-# Voice Conversion Processing Pipeline
-async def process_voice_conversion(
-    job_id: str,
-    input_file_path: str,
-    temp_dir: str,
-    f0_up_key: int = 0,
-    f0_method: str = "rmvpe",
-    index_rate: float = 0.75,
-    filter_radius: int = 3,
-    rms_mix_rate: float = 0.25,
-    protect: float = 0.33,
-    resample_sr: int = 0
-):
-    """
-    Background task to process voice conversion using RVC.
-    """
-    try:
-        voice_conversion_jobs[job_id]['status'] = 'processing'
-        voice_conversion_jobs[job_id]['message'] = 'Starting voice conversion...'
-        
-        # Convert input to WAV if needed (RVC works best with WAV)
-        input_path = Path(input_file_path)
-        input_wav_path = os.path.join(temp_dir, f"input_{job_id}.wav")
-        
-        # If not WAV, convert using ffmpeg (if available) or use as-is
-        if input_path.suffix.lower() != '.wav':
-            logger.info(f"Job {job_id}: Converting input to WAV format")
-            try:
-                import subprocess
-                subprocess.run(
-                    ['ffmpeg', '-i', input_file_path, '-y', input_wav_path],
-                    check=True,
-                    capture_output=True
-                )
-                input_file_path = input_wav_path
-            except (subprocess.CalledProcessError, FileNotFoundError):
-                logger.warning(f"Job {job_id}: FFmpeg not available, using original file format")
-                # RVC might still work with other formats, but WAV is recommended
-        
-        # Perform voice conversion
-        logger.info(f"Job {job_id}: Performing voice conversion")
-        output_wav_path = os.path.join(temp_dir, f"output_{job_id}.wav")
-        
-        rvc_client.convert_voice(
-            input_path=input_file_path,
-            output_path=output_wav_path,
-            sid=0,  # Default speaker ID
-            f0_up_key=f0_up_key,
-            f0_method=f0_method,
-            index_rate=index_rate,
-            filter_radius=filter_radius,
-            rms_mix_rate=rms_mix_rate,
-            protect=protect,
-            resample_sr=resample_sr
-        )
-        
-        # Convert output to MP3 for download
-        logger.info(f"Job {job_id}: Converting output to MP3")
-        output_mp3_path = os.path.join(temp_dir, f"output_{job_id}.mp3")
-        try:
-            import subprocess
-            subprocess.run(
-                ['ffmpeg', '-i', output_wav_path, '-y', '-codec:a', 'libmp3lame', '-q:a', '2', output_mp3_path],
-                check=True,
-                capture_output=True
-            )
-            final_output_path = output_mp3_path
-        except (subprocess.CalledProcessError, FileNotFoundError):
-            logger.warning(f"Job {job_id}: FFmpeg not available for MP3 conversion, using WAV")
-            final_output_path = output_wav_path
-        
-        voice_conversion_jobs[job_id]['output_path'] = final_output_path
-        voice_conversion_jobs[job_id]['status'] = 'completed'
-        voice_conversion_jobs[job_id]['message'] = 'Voice conversion completed!'
-        logger.info(f"Job {job_id}: Processing complete")
-        
-    except Exception as e:
-        logger.error(f"Job {job_id}: Processing failed: {str(e)}", exc_info=True)
-        voice_conversion_jobs[job_id]['status'] = 'failed'
-        voice_conversion_jobs[job_id]['message'] = f'Processing failed: {str(e)}'
-        voice_conversion_jobs[job_id]['error'] = str(e)
-
-
-@app.post("/api/voice-conversion/upload", response_model=VoiceConversionResponse)
-async def upload_voice_conversion(
-    background_tasks: BackgroundTasks,
-    audio_file: UploadFile = File(...),
-    f0_up_key: int = Form(0),
-    f0_method: str = Form("rmvpe"),
-    index_rate: float = Form(0.75),
-    filter_radius: int = Form(3),
-    rms_mix_rate: float = Form(0.25),
-    protect: float = Form(0.33),
-    resample_sr: int = Form(0)
-):
-    """
-    Upload an audio file and start voice conversion process.
-    """
-    if not rvc_client or not rvc_client.is_available():
-        raise HTTPException(
-            status_code=500,
-            detail="RVC client not initialized. Please ensure a model file is placed in assets/weights/"
-        )
-    
-    job_id = str(uuid.uuid4())
-    temp_dir = tempfile.mkdtemp(prefix=f"voice_conversion_{job_id}_")
-    
-    try:
-        # Save uploaded file to temp directory
-        input_file_path = os.path.join(temp_dir, f"input_{job_id}{Path(audio_file.filename).suffix}")
-        async with aiofiles.open(input_file_path, 'wb') as f:
-            content = await audio_file.read()
-            await f.write(content)
-        
-        # Initialize job tracking
-        voice_conversion_jobs[job_id] = {
-            'status': 'pending',
-            'created_at': datetime.now(),
-            'input_file_path': input_file_path,
-            'temp_dir': temp_dir,
-            'message': 'Starting processing...'
-        }
-        
-        # Start background processing
-        background_tasks.add_task(
-            process_voice_conversion,
-            job_id,
-            input_file_path,
-            temp_dir,
-            f0_up_key,
-            f0_method,
-            index_rate,
-            filter_radius,
-            rms_mix_rate,
-            protect,
-            resample_sr
-        )
-        
-        return VoiceConversionResponse(
-            job_id=job_id,
-            status='pending',
-            message='Voice conversion started'
-        )
-    
-    except Exception as e:
-        logger.error(f"Job {job_id}: Upload failed: {str(e)}", exc_info=True)
-        # Clean up temp directory on error
-        try:
-            import shutil
-            shutil.rmtree(temp_dir, ignore_errors=True)
-        except:
-            pass
-        raise HTTPException(status_code=500, detail=f"Failed to start processing: {str(e)}")
-
-
-@app.get("/api/voice-conversion/status/{job_id}", response_model=VoiceConversionStatusResponse)
-async def get_voice_conversion_status(job_id: str):
-    """
-    Get status of a voice conversion job.
-    """
-    if job_id not in voice_conversion_jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    job = voice_conversion_jobs[job_id]
-    
-    # Calculate progress if processing
-    progress = None
-    if job['status'] == 'processing':
-        # Simple progress estimation
-        progress = 50  # Processing is in progress
-    
-    return VoiceConversionStatusResponse(
-        job_id=job_id,
-        status=job['status'],
-        progress=progress,
-        message=job.get('message', '')
-    )
-
-
-@app.get("/api/voice-conversion/download/{job_id}")
-async def download_voice_conversion(job_id: str):
-    """
-    Download the converted audio file.
-    """
-    if job_id not in voice_conversion_jobs:
-        raise HTTPException(status_code=404, detail="Job not found")
-    
-    job = voice_conversion_jobs[job_id]
-    
-    if job['status'] != 'completed':
-        raise HTTPException(
-            status_code=400,
-            detail=f"Job not completed. Current status: {job['status']}"
-        )
-    
-    output_path = job.get('output_path')
-    if not output_path or not os.path.exists(output_path):
-        raise HTTPException(
-            status_code=404,
-            detail="Output file not found"
-        )
-    
-    try:
-        async with aiofiles.open(output_path, 'rb') as f:
-            audio_bytes = await f.read()
-        
-        # Determine media type based on file extension
-        ext = Path(output_path).suffix.lower()
-        media_type = "audio/mpeg" if ext == ".mp3" else "audio/wav"
-        filename = f"voice-converted-{job_id}{ext}"
-        
-        return StreamingResponse(
-            io.BytesIO(audio_bytes),
-            media_type=media_type,
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}"
-            }
-        )
-    except Exception as e:
-        logger.error(f"Failed to download converted audio: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Failed to retrieve audio: {str(e)}")
