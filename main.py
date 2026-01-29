@@ -70,7 +70,7 @@ app.add_middleware(
 
 @app.get("/")
 def read_root():
-    return {"message": "ElevenLabs Music Generator API"}
+    return {"message": "ok"}
 
 
 @app.post("/api/generate", response_model=GenerateMusicResponse)
