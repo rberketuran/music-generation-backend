@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: scateai-backend
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ELEVENLABS_API_KEY
+        sync: false
+      - key: RVC_MODEL_PATH
+        value: assets/weights/default.pth
+      - key: RVC_INDEX_PATH
+        value: assets/indices/default.index
+    # Uncomment and configure if you need persistent storage for RVC models
+    # disk:
+    #   name: rvc-models-disk
+    #   mountPath: /var/data
+    #   sizeGB: 1

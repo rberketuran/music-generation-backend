@@ -41,10 +41,26 @@ except Exception as e:
 tasks = {}  # {task_id: {status, created_at, composition_plan, ...}}
 voice_conversion_jobs = {}  # {job_id: {status, created_at, file_paths, ...}}
 
-# Enable CORS for frontend
+# Configure CORS for frontend
+# Support both local development and production frontend URLs
+cors_origins = [
+    "http://localhost:5173",  # Vite default port
+    "http://localhost:3000",  # Alternative local port
+]
+
+# Add production frontend URL from environment if set
+frontend_url = os.getenv("FRONTEND_URL")
+if frontend_url:
+    cors_origins.append(frontend_url)
+
+# Allow all origins in development, or specific origins in production
+allow_all_origins = os.getenv("ALLOW_ALL_ORIGINS", "false").lower() == "true"
+if allow_all_origins:
+    cors_origins = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "http://localhost:3000"],  # Vite default port
+    allow_origins=cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
